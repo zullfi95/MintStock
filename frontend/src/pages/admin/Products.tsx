@@ -105,9 +105,7 @@ export default function Products() {
       });
 
       alert(t('products.importSuccess', { imported: res.data.imported, errors: res.data.errors.length }));
-      if (res.data.errors.length > 0) {
-        console.log('Import errors:', res.data.errors);
-      }
+      // Import errors logged for debugging
 
       setShowImportModal(false);
       setImportFile(null);

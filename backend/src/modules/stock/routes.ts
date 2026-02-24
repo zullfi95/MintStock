@@ -2,6 +2,7 @@ import express from 'express';
 import { authenticateToken, requireRole, ROLES, canManageWarehouse } from '../../shared/middleware/auth';
 import { prisma } from '../../db';
 import { logger } from '../../shared/utils/logger';
+import { notificationService, NotificationType } from '../../shared/services/notificationService';
 
 const router = express.Router();
 
@@ -87,6 +88,23 @@ router.get('/low', authenticateToken, async (req, res) => {
       },
       orderBy: { product: { name: 'asc' } }
     });
+
+    // Отправляем уведомления о низких остатках
+    if (lowStock.length > 0) {
+      const notifications = lowStock.map(item => ({
+        type: NotificationType.LOW_STOCK,
+        data: {
+          productName: item.product.name,
+          categoryName: item.product.category.name,
+          quantity: item.quantity,
+          unit: item.product.unit,
+          limitQty: item.limitQty,
+        }
+      }));
+
+      // Отправляем пулом
+      await notificationService.sendBulk(notifications);
+    }
 
     res.json(lowStock);
   } catch (error) {

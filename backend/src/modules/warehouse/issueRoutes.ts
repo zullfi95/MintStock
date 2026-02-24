@@ -2,6 +2,7 @@ import express from 'express';
 import { authenticateToken, canManageWarehouse } from '../../shared/middleware/auth';
 import { prisma } from '../../db';
 import { logger } from '../../shared/utils/logger';
+import { notificationService, NotificationType } from '../../shared/services/notificationService';
 
 const router = express.Router();
 
@@ -150,6 +151,24 @@ router.post('/', authenticateToken, async (req, res) => {
 
       return { issueRecords: createdIssueRecords };
     });
+
+    // Отправляем уведомление супервайзору о выполнении запроса
+    const requestDetails = await prisma.request.findUnique({
+      where: { id: requestId },
+      include: { location: true }
+    });
+
+    if (requestDetails) {
+      await notificationService.send({
+        type: NotificationType.REQUEST_FULFILLED,
+        recipientUsername: requestDetails.createdBy,
+        data: {
+          requestId,
+          locationName: requestDetails.location.name,
+          itemsIssued: items.length,
+        }
+      });
+    }
 
     logger.info('Issue created', { requestId, issuesCount: result.issueRecords.length, by: req.user?.username });
     res.status(201).json(result.issueRecords);

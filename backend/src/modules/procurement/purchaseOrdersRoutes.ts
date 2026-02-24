@@ -6,6 +6,7 @@ import { generatePO } from '../../shared/services/pdfService';
 import { sendPOByEmail } from '../../shared/services/emailService';
 import { sendPO } from '../../shared/services/telegramService';
 import { upload } from '../../shared/utils/upload';
+import { notificationService, NotificationType } from '../../shared/services/notificationService';
 
 const router = express.Router();
 
@@ -116,13 +117,24 @@ router.post('/', authenticateToken, async (req, res) => {
     if (purchaseRequestId) {
       await prisma.purchaseRequest.update({
         where: { id: purchaseRequestId },
-        data: { 
+        data: {
           status: 'IN_PROGRESS',
           poId: purchaseOrder.id
         }
       });
       logger.info('PurchaseRequest linked to PO', { purchaseRequestId, poId: purchaseOrder.id });
     }
+
+    // Отправляем уведомление о создании PO
+    await notificationService.send({
+      type: NotificationType.PO_CREATED,
+      data: {
+        poNumber: purchaseOrder.poNumber,
+        supplierName: purchaseOrder.supplier.name,
+        totalAmount: purchaseOrder.totalAmount,
+        deliveryDate: purchaseOrder.deliveryDate,
+      }
+    });
 
     logger.info('Purchase order created', { id: purchaseOrder.id, poNumber, supplierId, totalAmount, by: req.user?.username });
     res.status(201).json(purchaseOrder);
@@ -429,7 +441,17 @@ router.post('/:id/receive', authenticateToken, upload.single('photo'), async (re
         }
       });
 
-      return receiveRecord;
+      return { receiveRecord, itemsReceived: items.length };
+    });
+
+    // Отправляем уведомление о приёмке товара
+    await notificationService.send({
+      type: NotificationType.PO_RECEIVED,
+      data: {
+        poNumber: po.poNumber,
+        itemsReceived: result.itemsReceived,
+        receivedBy: req.user!.username,
+      }
     });
 
     logger.info('PO items received', { id, itemsCount: items.length, photoUrl, by: req.user?.username });
