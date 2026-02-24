@@ -1,0 +1,318 @@
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "linux-musl-openssl-3.0.x"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── ТОВАРЫ ──────────────────────────────────────────────────
+
+model Product {
+  id         String   @id @default(cuid())
+  name       String
+  categoryId String
+  unit       String   // шт, л, кг, упак, рулон
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  category             Category              @relation(fields: [categoryId], references: [id])
+  stockItems           StockItem[]
+  requestItems         RequestItem[]
+  purchaseRequestItems PurchaseRequestItem[]
+  poItems              PurchaseOrderItem[]
+  supplierPrices       SupplierPrice[]
+  inventoryItems       InventoryItem[]
+  issueRecords         IssueRecord[]
+
+  @@map("products")
+}
+
+model Category {
+  id        String    @id @default(cuid())
+  name      String    @unique
+  createdAt DateTime  @default(now())
+
+  products  Product[]
+
+  @@map("categories")
+}
+
+// ─── ПОСТАВЩИКИ ──────────────────────────────────────────────
+
+model Supplier {
+  id         String   @id @default(cuid())
+  name       String
+  contact    String   // Контактное лицо
+  phone      String?
+  email      String?
+  telegramId String?  // chat_id (поставщик должен написать боту первым)
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  purchaseOrders PurchaseOrder[]
+  supplierPrices SupplierPrice[]
+
+  @@map("suppliers")
+}
+
+// Цена товара у конкретного поставщика
+model SupplierPrice {
+  id         String   @id @default(cuid())
+  supplierId String
+  productId  String
+  price      Float    // Цена в манатах (₼)
+  updatedAt  DateTime @updatedAt
+
+  supplier   Supplier @relation(fields: [supplierId], references: [id])
+  product    Product  @relation(fields: [productId], references: [id])
+
+  @@unique([supplierId, productId])
+  @@map("supplier_prices")
+}
+
+// ─── ЛОКАЦИИ (ЦС + ОБЪЕКТЫ) ──────────────────────────────────
+
+model Location {
+  id        String       @id @default(cuid())
+  name      String
+  type      LocationType // WAREHOUSE (ЦС) | SITE (объект)
+  address   String?
+  isActive  Boolean      @default(true)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+
+  stockItems          StockItem[]
+  requests            Request[]
+  supervisorLocations SupervisorLocation[]
+  inventories         Inventory[]
+
+  @@map("locations")
+}
+
+enum LocationType {
+  WAREHOUSE
+  SITE
+}
+
+// Привязка супервайзора к объекту (один супервайзор → несколько объектов)
+model SupervisorLocation {
+  id           String   @id @default(cuid())
+  supervisorId String   // username из MintAuth
+  locationId   String
+  assignedAt   DateTime @default(now())
+
+  location     Location @relation(fields: [locationId], references: [id])
+
+  @@unique([supervisorId, locationId])
+  @@map("supervisor_locations")
+}
+
+// ─── ОСТАТКИ ─────────────────────────────────────────────────
+
+// Текущие остатки товара на локации (ЦС или объект)
+model StockItem {
+  id         String   @id @default(cuid())
+  productId  String
+  locationId String
+  quantity   Int      @default(0)
+  limitQty   Int?     // Месячный лимит по количеству (только для SITE)
+  updatedAt  DateTime @updatedAt
+
+  product    Product  @relation(fields: [productId], references: [id])
+  location   Location @relation(fields: [locationId], references: [id])
+
+  @@unique([locationId, productId])
+  @@map("stock_items")
+}
+
+// ─── ЗАПРОСЫ НА ПОПОЛНЕНИЕ (Супервайзор → Складовщик) ────────
+
+model Request {
+  id         String        @id @default(cuid())
+  locationId String        // Объект который запрашивает
+  status     RequestStatus @default(PENDING)
+  createdBy  String        // username из MintAuth (Супервайзор)
+  note       String?
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  location    Location      @relation(fields: [locationId], references: [id])
+  items       RequestItem[]
+  issueRecords IssueRecord[]
+
+  @@map("requests")
+}
+
+model RequestItem {
+  id        String  @id @default(cuid())
+  requestId String
+  productId String
+  quantity  Int     // Запрошено
+  issued    Int     @default(0) // Выдано (для частичной выдачи)
+
+  request   Request @relation(fields: [requestId], references: [id], onDelete: Cascade)
+  product   Product @relation(fields: [productId], references: [id])
+
+  @@map("request_items")
+}
+
+enum RequestStatus {
+  PENDING    // Ожидает обработки складовщиком
+  APPROVED   // Принят в работу
+  PARTIAL    // Частично выдан
+  FULFILLED  // Полностью выдан
+  REJECTED   // Отклонён
+}
+
+// Запись о выдаче товара со склада на объект
+model IssueRecord {
+  id        String   @id @default(cuid())
+  requestId String
+  productId String   // Какой товар выдан
+  quantity  Int      // Сколько выдано
+  issuedBy  String   // username из MintAuth (Складовщик)
+  issuedAt  DateTime @default(now())
+  note      String?
+
+  request   Request  @relation(fields: [requestId], references: [id])
+  product   Product  @relation(fields: [productId], references: [id])
+
+  @@map("issue_records")
+}
+
+// ─── ЗАПРОСЫ НА ЗАКУПКУ (Складовщик → Закупщик) ─────────────
+
+model PurchaseRequest {
+  id        String                @id @default(cuid())
+  status    PurchaseRequestStatus @default(PENDING)
+  createdBy String                // username из MintAuth (Складовщик)
+  note      String?
+  createdAt DateTime              @default(now())
+  updatedAt DateTime              @updatedAt
+
+  items     PurchaseRequestItem[]
+  po        PurchaseOrder?        @relation(fields: [poId], references: [id])
+  poId      String?               // Ссылка на PO когда создана
+
+  @@map("purchase_requests")
+}
+
+enum PurchaseRequestStatus {
+  PENDING      // Ожидает обработки закупщиком
+  IN_PROGRESS  // Закупщик работает над PO
+  DONE         // PO создана
+}
+
+model PurchaseRequestItem {
+  id                String          @id @default(cuid())
+  purchaseRequestId String
+  productId         String
+  quantity          Int             // Сколько нужно докупить
+
+  purchaseRequest   PurchaseRequest @relation(fields: [purchaseRequestId], references: [id], onDelete: Cascade)
+  product           Product         @relation(fields: [productId], references: [id])
+
+  @@map("purchase_request_items")
+}
+
+// ─── PURCHASE ORDERS (PO) ─────────────────────────────────────
+
+model PurchaseOrder {
+  id          String     @id @default(cuid())
+  poNumber    String     @unique  // PO-2026-0001
+  supplierId  String
+  status      POStatus   @default(DRAFT)
+  totalAmount Float      @default(0)
+  createdBy   String     // username из MintAuth (Закупщик)
+  deliveryDate DateTime? // Ожидаемая дата доставки
+  note        String?
+  createdAt   DateTime   @default(now())
+  sentAt      DateTime?
+  receivedAt  DateTime?
+  closedAt    DateTime?
+
+  supplier        Supplier              @relation(fields: [supplierId], references: [id])
+  items           PurchaseOrderItem[]
+  receiveRecords  ReceiveRecord[]
+  purchaseRequests PurchaseRequest[]   // Какие purchase requests покрывает этот PO
+
+  @@map("purchase_orders")
+}
+
+enum POStatus {
+  DRAFT     // Черновик (создан, не отправлен)
+  SENT      // Отправлен поставщику
+  PARTIALLY_RECEIVED  // Частично принят
+  RECEIVED  // Товар принят на ЦС
+  CLOSED    // Закрыт
+}
+
+model PurchaseOrderItem {
+  id          String  @id @default(cuid())
+  poId        String
+  productId   String
+  quantity    Int     // Заказано
+  receivedQty Int     @default(0) // Реально принято (частичные поставки)
+  unitPrice   Float   // Цена за единицу (₼)
+  totalPrice  Float   // quantity * unitPrice
+
+  po          PurchaseOrder @relation(fields: [poId], references: [id], onDelete: Cascade)
+  product     Product       @relation(fields: [productId], references: [id])
+
+  @@map("purchase_order_items")
+}
+
+// Запись о приёмке товара по PO (Складовщик)
+model ReceiveRecord {
+  id         String   @id @default(cuid())
+  poId       String
+  receivedBy String   // username из MintAuth (Складовщик)
+  photoUrl   String?  // Фото накладной или товара
+  note       String?
+  receivedAt DateTime @default(now())
+
+  po         PurchaseOrder @relation(fields: [poId], references: [id])
+
+  @@map("receive_records")
+}
+
+// ─── ИНВЕНТАРИЗАЦИЯ ──────────────────────────────────────────
+
+model Inventory {
+  id          String          @id @default(cuid())
+  locationId  String
+  status      InventoryStatus @default(IN_PROGRESS)
+  conductedBy String          // username из MintAuth
+  startedAt   DateTime        @default(now())
+  closedAt    DateTime?
+  note        String?
+
+  location    Location        @relation(fields: [locationId], references: [id])
+  items       InventoryItem[]
+
+  @@map("inventories")
+}
+
+enum InventoryStatus {
+  IN_PROGRESS
+  COMPLETED
+}
+
+model InventoryItem {
+  id          String    @id @default(cuid())
+  inventoryId String
+  productId   String
+  systemQty   Int       // Кол-во в системе (до инвентаризации)
+  actualQty   Int       // Фактическое кол-во (введено вручную)
+  difference  Int       // actualQty - systemQty (может быть отрицательным)
+
+  inventory   Inventory @relation(fields: [inventoryId], references: [id], onDelete: Cascade)
+  product     Product   @relation(fields: [productId], references: [id])
+
+  @@map("inventory_items")
+}
